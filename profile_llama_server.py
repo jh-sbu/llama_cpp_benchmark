@@ -1005,6 +1005,26 @@ def write_json_report(path: Path, report: Mapping[str, Any]) -> None:
         handle.write("\n")
 
 
+def read_json_report(path: Path) -> Mapping[str, Any]:
+    try:
+        with path.open(encoding="utf-8") as handle:
+            report = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ProfileError(
+            f"{path} is not a valid JSON report: {exc.msg}"
+        ) from exc
+
+    if not isinstance(report, dict):
+        raise ProfileError(f"{path} is not a JSON object")
+    version = report.get("schema_version")
+    if version != SCHEMA_VERSION:
+        raise ProfileError(
+            f"{path} uses schema version {version!r}; "
+            f"expected {SCHEMA_VERSION}"
+        )
+    return report
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -1082,11 +1102,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         metavar="NAMES",
         help="comma-separated tasks selected from short,medium,long (default: all)",
     )
-    parser.add_argument(
+    report_group = parser.add_mutually_exclusive_group()
+    report_group.add_argument(
         "--json",
         type=Path,
         metavar="PATH",
         help="write full per-run data and summaries to PATH",
+    )
+    report_group.add_argument(
+        "--summary-from-json",
+        type=Path,
+        metavar="PATH",
+        help="print the summary stored in a schema-v2 JSON report and exit",
     )
     return parser
 
@@ -1094,6 +1121,26 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
+
+    if args.summary_from_json:
+        try:
+            report = read_json_report(args.summary_from_json)
+            print_summary(report)
+        except ProfileError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        except OSError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        except (KeyError, TypeError, ValueError) as exc:
+            print(
+                f"error: {args.summary_from_json} is not a valid "
+                f"schema-v{SCHEMA_VERSION} report: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        return 0
+
     available = {task.name: task for task in default_tasks()}
     unknown = [name for name in args.tasks if name not in available]
     if unknown:

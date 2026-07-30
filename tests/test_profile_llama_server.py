@@ -4,9 +4,9 @@ import json
 import threading
 import time
 import unittest
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
@@ -384,6 +384,52 @@ class WorkflowTests(unittest.TestCase):
             path = Path(directory) / "report.json"
             profiler.write_json_report(path, report)
             self.assertEqual(json.loads(path.read_text())["schema_version"], 2)
+
+    def test_summary_from_json_reprints_schema_v2_report(self) -> None:
+        result = profiler.RunResult(
+            "short", 1, 2, 10, 10, 0, 2, 2, 5, 20, 10, 1000, 20, 100, 90, "limit"
+        )
+        report = profiler.build_report(
+            base_url="http://localhost:8080",
+            repeats=1,
+            warmups=0,
+            timeout_seconds=1,
+            ready_timeout_seconds=2,
+            selected_tasks=[
+                profiler.BenchmarkTask("short", "description", "prompt", 2)
+            ],
+            server_metadata={
+                "model": "test-model",
+                "context_size": 2048,
+                "build_info": "test-build",
+            },
+            results=[result],
+            failures=[],
+        )
+        expected = StringIO()
+        with redirect_stdout(expected):
+            profiler.print_summary(report)
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            profiler.write_json_report(path, report)
+            actual = StringIO()
+            with redirect_stdout(actual):
+                status = profiler.main(["--summary-from-json", str(path)])
+
+        self.assertEqual(status, 0)
+        self.assertEqual(actual.getvalue(), expected.getvalue())
+
+    def test_summary_from_json_rejects_other_schema_versions(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            path.write_text('{"schema_version": 1}', encoding="utf-8")
+            errors = StringIO()
+            with redirect_stderr(errors):
+                status = profiler.main(["--summary-from-json", str(path)])
+
+        self.assertEqual(status, 2)
+        self.assertIn("uses schema version 1; expected 2", errors.getvalue())
 
     def test_benchmark_rotates_task_order_and_collects_failures(self) -> None:
         calls: list[tuple[str, int]] = []
